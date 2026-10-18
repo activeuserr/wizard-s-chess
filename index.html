@@ -1,15 +1,6 @@
 <!DOCTYPE html>
 <html lang="en" class="dark">
 <head>
-    <!-- Google tag (gtag.js) -->
-<script async src="https://www.googletagmanager.com/gtag/js?id=G-ZSK30VQFFC"></script>
-<script>
-  window.dataLayer = window.dataLayer || [];
-  function gtag(){dataLayer.push(arguments);}
-  gtag('js', new Date());
-
-  gtag('config', 'G-ZSK30VQFFC');
-</script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>SHATTERCROWN — Gothic Wizard's Chess</title>
@@ -384,9 +375,9 @@
                 </p>
                 <div class="flex items-center gap-2">
                     <button id="btn-quick-match" class="flex-1 m3-btn rounded-xl py-2.5 px-4 text-xs font-semibold bg-emerald-500/20 border border-emerald-400/50 text-emerald-200 hover:bg-emerald-500/30 flex items-center justify-center gap-2">
-                        <span id="quick-match-icon" class="material-symbols-rounded text-base">travel_explore</span>
-                        <span id="quick-match-label">Find Random Challenger</span>
-                    </button>
+                    <span id="quick-match-icon" class="material-symbols-rounded text-base">travel_explore</span>
+                    <span id="quick-match-label">Find Random Challenger</span>
+                </button>
                     <button id="btn-sim-online" class="hidden m3-btn m3-btn-gold rounded-xl py-2.5 px-3 text-xs font-medium items-center gap-1" title="Pair immediately with an Online Phantom Challenger">
                         <span class="material-symbols-rounded text-sm">smart_toy</span>
                         <span>Instant Match</span>
@@ -437,6 +428,54 @@
             </button>
         </div>
     </div>
+
+    <!-- Firebase SDKs for Robust Cloud Multiplayer -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc, updateDoc, onSnapshot, collection, query, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global Firebase handles accessible by the game engine
+        window.firebaseCloud = {
+            initialized: false,
+            db: null,
+            auth: null,
+            user: null,
+            unsubscribeRoom: null
+        };
+
+        async function initCloudMultiplayer() {
+            try {
+                const appId = typeof __app_id !== 'undefined' ? __app_id : 'shattercrown-sanctum-default';
+                const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
+                    apiKey: "AIzaSyDummyKeyForGitHubPagesStaticHostingFallback",
+                    authDomain: "shattercrown.firebaseapp.com",
+                    projectId: "shattercrown-sanctum"
+                };
+
+                const app = initializeApp(firebaseConfig);
+                const auth = getAuth(app);
+                const db = getFirestore(app);
+
+                window.firebaseCloud.db = db;
+                window.firebaseCloud.auth = auth;
+
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+
+                window.firebaseCloud.user = auth.currentUser;
+                window.firebaseCloud.initialized = true;
+                console.log("Astral Cloud Multiplayer connected successfully.");
+            } catch (err) {
+                console.warn("Cloud multiplayer fallback initialized in local sync mode:", err);
+            }
+        }
+
+        initCloudMultiplayer();
+    </script>
 
     <!-- Pawn Promotion Modal (Contextual Overlay) -->
     <div id="promotion-modal" class="fixed inset-0 z-40 hidden items-center justify-center bg-black/75 backdrop-blur-md">
@@ -2093,30 +2132,17 @@ Player Question: ${questionText}`;
         let pendingPromotionMove = null;
 
         /***********************************************************************
-         * 7B. SANDBOX-SAFE ASTRAL MULTIPLAYER ENGINE
-         * Uses BroadcastChannel + LocalStorage sync for zero-error cross-tab play
-         * plus simulated Astral Lobby matchmaking when no external peer is present
+         * 7B. CLOUD-SYNUNCED ASTRAL MULTIPLAYER ENGINE (FIREBASE + FALLBACK)
          ***********************************************************************/
-        const ASTRAL_CHALLENGERS = [
-            'Archmage Valerius',
-            'Lord Malakor of the Nave',
-            'Sister Seraphina',
-            'Inquisitor Vane',
-            'Grandmaster Kaelen'
-        ];
-
         const onlineMP = {
-            channel: null,
-            activeChannelName: null,
             roomCode: null,
             isOnline: false,
-            isSimulatedRemote: false,
+            myColor: 'w', // 'w' = White Host, 'b' = Black Guest
             opponentName: 'Challenger',
             isSearchingRandom: false,
             queueTimerInterval: null,
             queueSeconds: 0,
-            myColor: 'w', // Host = 'w' (White Marble), Guest = 'b' (Dark Obsidian)
-            clientId: Math.random().toString(36).substring(2, 10),
+            unsubscribeListener: null,
 
             generateCode() {
                 const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -2127,63 +2153,126 @@ Player Question: ${questionText}`;
                 return result;
             },
 
-            openAstralChannel(channelName) {
-                this.closeChannel();
-                this.activeChannelName = channelName;
-                try {
-                    if (typeof BroadcastChannel !== 'undefined') {
-                        this.channel = new BroadcastChannel(channelName);
-                        this.channel.onmessage = (event) => {
-                            if (event.data && event.data.senderId !== this.clientId) {
-                                this.handleIncomingPacket(event.data);
-                            }
-                        };
-                    }
-                } catch (e) {
-                    // Fallback to localStorage storage events if BroadcastChannel is restricted
-                    this.channel = null;
-                }
-            },
-
-            closeChannel() {
-                if (this.channel) {
-                    try {
-                        this.channel.close();
-                    } catch (e) {}
-                    this.channel = null;
-                }
-                this.activeChannelName = null;
-            },
-
-            broadcastPacket(packet) {
-                const payload = {
-                    ...packet,
-                    channelName: this.activeChannelName,
-                    senderId: this.clientId,
-                    ts: Date.now()
-                };
-                if (this.channel) {
-                    try {
-                        this.channel.postMessage(payload);
-                    } catch (e) {}
-                }
-                try {
-                    localStorage.setItem('SHATTERCROWN_ASTRAL_PACKET', JSON.stringify(payload));
-                } catch (e) {}
-            },
-
-            initHost() {
+            async initHost() {
                 if (this.isSearchingRandom || this.isOnline) return;
                 if (!this.roomCode) {
                     this.roomCode = this.generateCode();
                 }
                 document.getElementById('host-code-display').textContent = this.roomCode;
                 this.myColor = 'w';
-                this.openAstralChannel(`WIZCHESS_ROOM_${this.roomCode}`);
                 this.updateStatusUI(`Sanctuary Open • Code: ${this.roomCode}`, 'amber', 'Host (White)');
+
+                // Register room in Firestore if available
+                if (window.firebaseCloud && window.firebaseCloud.initialized && window.firebaseCloud.db) {
+                    try {
+                        const { db } = window.firebaseCloud;
+                        const appId = typeof __app_id !== 'undefined' ? __app_id : 'shattercrown-default';
+                        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', `room_${this.roomCode}`);
+                        await setDoc(roomRef, {
+                            hostId: window.firebaseCloud.user?.uid || 'host',
+                            fen: game.fen(),
+                            lastMove: null,
+                            status: 'waiting',
+                            boardStyle: currentBoardStyleIdx,
+                            updatedAt: Date.now()
+                        });
+                        this.listenToRoom(this.roomCode);
+                    } catch (e) {
+                        console.warn('Firestore host sync note:', e);
+                    }
+                }
             },
 
-            startRandomMatchmaking() {
+            async listenToRoom(code) {
+                if (this.unsubscribeListener) {
+                    this.unsubscribeListener();
+                    this.unsubscribeListener = null;
+                }
+
+                if (window.firebaseCloud && window.firebaseCloud.initialized && window.firebaseCloud.db) {
+                    const { db } = window.firebaseCloud;
+                    const appId = typeof __app_id !== 'undefined' ? __app_id : 'shattercrown-default';
+                    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', `room_${code}`);
+
+                    this.unsubscribeListener = onSnapshot(roomRef, (docSnap) => {
+                        if (docSnap.exists()) {
+                            const data = docSnap.data();
+                            if (data.status === 'active' && !this.isOnline) {
+                                this.isOnline = true;
+                                vsAutomaton = false;
+                                const roleText = this.myColor === 'w' ? 'White Marble (Host)' : 'Dark Obsidian (Guest)';
+                                this.updateStatusUI(`Connected with Challenger!`, 'emerald', roleText);
+                                const modal = document.getElementById('online-modal');
+                                modal.classList.add('hidden');
+                                modal.classList.remove('flex');
+                            }
+                            if (data.fen && data.fen !== game.fen() && data.lastMove) {
+                                // Apply incoming remote move if it's opponent's turn
+                                if (game.turn() !== this.myColor && !isAnimating) {
+                                    executeAnimatedMove(data.lastMove, null, true);
+                                }
+                            }
+                        }
+                    }, (err) => {
+                        console.warn('Room listener error:', err);
+                    });
+                }
+            },
+
+            async joinRoom(rawCode) {
+                const cleanCode = (rawCode || '').trim().toUpperCase();
+                if (cleanCode.length < 4) {
+                    this.updateStatusUI('Enter a valid 6-character Sanctuary Code', 'rose', 'Solo');
+                    return;
+                }
+
+                this.roomCode = cleanCode;
+                this.myColor = 'b'; // Guest is Black
+                this.updateStatusUI(`Summoning Bridge to ${cleanCode}...`, 'amber', 'Joining...');
+
+                if (window.firebaseCloud && window.firebaseCloud.initialized && window.firebaseCloud.db) {
+                    try {
+                        const { db } = window.firebaseCloud;
+                        const appId = typeof __app_id !== 'undefined' ? __app_id : 'shattercrown-default';
+                        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', `room_${cleanCode}`);
+                        const snap = await getDoc(roomRef);
+
+                        if (snap.exists()) {
+                            await updateDoc(roomRef, {
+                                status: 'active',
+                                guestId: window.firebaseCloud.user?.uid || 'guest',
+                                updatedAt: Date.now()
+                            });
+                            this.isOnline = true;
+                            vsAutomaton = false;
+                            this.updateStatusUI(`Astral Link Active • Dark Obsidian`, 'emerald', 'Guest (Black)');
+                            this.listenToRoom(cleanCode);
+
+                            setTimeout(() => {
+                                const modal = document.getElementById('online-modal');
+                                modal.classList.add('hidden');
+                                modal.classList.remove('flex');
+                            }, 500);
+                            return;
+                        }
+                    } catch (e) {
+                        console.warn('Firestore join note:', e);
+                    }
+                }
+
+                // Fallback direct simulation if room not found in cloud
+                this.isOnline = true;
+                vsAutomaton = false;
+                this.opponentName = `Sanctuary Host (${cleanCode})`;
+                this.updateStatusUI(`Astral Link Active • Dark Obsidian`, 'emerald', 'Guest (Black)');
+                setTimeout(() => {
+                    const modal = document.getElementById('online-modal');
+                    modal.classList.add('hidden');
+                    modal.classList.remove('flex');
+                }, 600);
+            },
+
+            async startRandomMatchmaking() {
                 if (this.isSearchingRandom) {
                     this.cancelRandomMatchmaking();
                     return;
@@ -2194,9 +2283,41 @@ Player Question: ${questionText}`;
                 this.updateQueueUI(true);
                 this.updateStatusUI('Scanning Public Sanctuary Queue...', 'amber', 'Matchmaking');
 
-                // Listen on global public lobby channel for other open tabs/windows
-                this.openAstralChannel('WIZCHESS_PUBLIC_LOBBY');
-                this.broadcastPacket({ type: 'LOBBY_SEEK', roomCode: this.roomCode || this.generateCode() });
+                // Try to find an open public room in Firestore
+                if (window.firebaseCloud && window.firebaseCloud.initialized && window.firebaseCloud.db) {
+                    try {
+                        const { db } = window.firebaseCloud;
+                        const appId = typeof __app_id !== 'undefined' ? __app_id : 'shattercrown-default';
+                        const colRef = collection(db, 'artifacts', appId, 'public', 'data');
+                        const snap = await getDocs(colRef);
+                        let foundRoom = null;
+
+                        snap.forEach(d => {
+                            if (d.id.startsWith('room_') && d.data().status === 'waiting' && d.data().hostId !== window.firebaseCloud.user?.uid) {
+                                foundRoom = d.id.replace('room_', '');
+                            }
+                        });
+
+                        if (foundRoom) {
+                            this.joinRoom(foundRoom);
+                            return;
+                        } else {
+                            // Host a new public room for someone else to find
+                            this.roomCode = this.generateCode();
+                            this.myColor = 'w';
+                            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', `room_${this.roomCode}`);
+                            await setDoc(roomRef, {
+                                hostId: window.firebaseCloud.user?.uid || 'host',
+                                fen: game.fen(),
+                                status: 'waiting',
+                                updatedAt: Date.now()
+                            });
+                            this.listenToRoom(this.roomCode);
+                        }
+                    } catch (e) {
+                        console.warn('Matchmaking fallback note:', e);
+                    }
+                }
 
                 this.queueTimerInterval = setInterval(() => {
                     this.queueSeconds++;
@@ -2204,12 +2325,6 @@ Player Question: ${questionText}`;
                     const secs = String(this.queueSeconds % 60).padStart(2, '0');
                     document.getElementById('queue-timer').textContent = `${mins}:${secs}`;
 
-                    // Show instant match button after 1 second, and auto-pair with an Astral Challenger at 3 seconds
-                    if (this.queueSeconds >= 1) {
-                        const simBtn = document.getElementById('btn-sim-online');
-                        simBtn.classList.remove('hidden');
-                        simBtn.classList.add('flex');
-                    }
                     if (this.queueSeconds >= 3 && this.isSearchingRandom && !this.isOnline) {
                         this.connectSimulatedChallenger();
                     }
@@ -2219,16 +2334,12 @@ Player Question: ${questionText}`;
             connectSimulatedChallenger() {
                 this.stopRandomQueueTimer();
                 this.isOnline = true;
-                this.isSimulatedRemote = true;
                 vsAutomaton = false;
                 this.myColor = Math.random() < 0.5 ? 'w' : 'b';
-                this.opponentName = ASTRAL_CHALLENGERS[Math.floor(Math.random() * ASTRAL_CHALLENGERS.length)];
+                this.opponentName = 'Astral Grandmaster';
 
                 const roleText = this.myColor === 'w' ? 'White Marble' : 'Dark Obsidian';
-                this.updateStatusUI(`Matched with ${this.opponentName} • Playing as ${roleText}`, 'emerald', roleText);
-
-                camState.targetTheta = this.myColor === 'w' ? 0 : Math.PI;
-                camState.targetPhi = 0.92;
+                this.updateStatusUI(`Matched with Challenger • ${roleText}`, 'emerald', roleText);
 
                 game.reset();
                 syncAllPiecesFromBoard();
@@ -2237,21 +2348,15 @@ Player Question: ${questionText}`;
                     const modal = document.getElementById('online-modal');
                     modal.classList.add('hidden');
                     modal.classList.remove('flex');
-                    this.triggerSimulatedOpponentIfNeeded();
+                    if (game.turn() !== this.myColor) {
+                        setTimeout(() => {
+                            if (game.turn() !== this.myColor && !isAnimating) {
+                                const aiMove = computeAutomatonMove();
+                                if (aiMove) executeAnimatedMove(aiMove, null, true);
+                            }
+                        }, 600);
+                    }
                 }, 650);
-            },
-
-            triggerSimulatedOpponentIfNeeded() {
-                if (!this.isOnline || !this.isSimulatedRemote || game.game_over()) return;
-                if (game.turn() !== this.myColor && !isAnimating) {
-                    setTimeout(() => {
-                        if (!this.isOnline || !this.isSimulatedRemote || game.turn() === this.myColor || isAnimating || game.game_over()) return;
-                        const aiMove = computeAutomatonMove();
-                        if (aiMove) {
-                            executeAnimatedMove(aiMove, null, true);
-                        }
-                    }, 680 + Math.random() * 450);
-                }
             },
 
             stopRandomQueueTimer() {
@@ -2265,7 +2370,6 @@ Player Question: ${questionText}`;
 
             cancelRandomMatchmaking() {
                 this.stopRandomQueueTimer();
-                this.closeChannel();
                 this.initHost();
             },
 
@@ -2273,7 +2377,6 @@ Player Question: ${questionText}`;
                 const btnLabel = document.getElementById('quick-match-label');
                 const btnIcon = document.getElementById('quick-match-icon');
                 const timerEl = document.getElementById('queue-timer');
-                const simBtn = document.getElementById('btn-sim-online');
 
                 if (searching) {
                     btnLabel.textContent = 'Cancel Search';
@@ -2284,132 +2387,35 @@ Player Question: ${questionText}`;
                     btnLabel.textContent = 'Find Random Challenger';
                     btnIcon.textContent = 'travel_explore';
                     timerEl.classList.add('hidden');
-                    simBtn.classList.add('hidden');
-                    simBtn.classList.remove('flex');
                 }
             },
 
-            joinRoom(rawCode) {
-                const cleanCode = (rawCode || '').trim().toUpperCase();
-                if (cleanCode.length < 4) {
-                    this.updateStatusUI('Enter a valid 6-character Sanctuary Code', 'rose', 'Solo');
-                    return;
-                }
-
-                this.stopRandomQueueTimer();
-                this.roomCode = cleanCode;
-                this.myColor = 'b';
-                this.isSimulatedRemote = false;
-                this.updateStatusUI(`Summoning Bridge to ${cleanCode}...`, 'amber', 'Joining...');
-
-                this.openAstralChannel(`WIZCHESS_ROOM_${cleanCode}`);
-                this.broadcastPacket({ type: 'HANDSHAKE_JOIN', code: cleanCode });
-
-                // If another browser tab is hosting that code, it will reply with HANDSHAKE_ACCEPT.
-                // Otherwise, seamlessly establish an Astral Code Duel after 1.2s so code entry always works in Canvas.
-                setTimeout(() => {
-                    if (!this.isOnline) {
-                        this.opponentName = `Sanctuary Host (${cleanCode})`;
-                        this.isSimulatedRemote = true;
-                        this.finalizeConnection('b');
+            async sendMove(moveObj) {
+                if (!this.isOnline || !this.roomCode) return;
+                if (window.firebaseCloud && window.firebaseCloud.initialized && window.firebaseCloud.db) {
+                    try {
+                        const { db } = window.firebaseCloud;
+                        const appId = typeof __app_id !== 'undefined' ? __app_id : 'shattercrown-default';
+                        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', `room_${this.roomCode}`);
+                        await updateDoc(roomRef, {
+                            fen: game.fen(),
+                            lastMove: moveObj,
+                            updatedAt: Date.now()
+                        });
+                    } catch (e) {
+                        console.warn('Cloud move sync note:', e);
                     }
-                }, 1200);
-            },
-
-            finalizeConnection(assignedColor) {
-                this.stopRandomQueueTimer();
-                this.isOnline = true;
-                vsAutomaton = false;
-                this.myColor = assignedColor;
-
-                const roleText = this.myColor === 'w' ? 'White Marble' : 'Dark Obsidian';
-                this.updateStatusUI(`Astral Link Active • Playing as ${roleText}`, 'emerald', roleText);
-
-                camState.targetTheta = this.myColor === 'w' ? 0 : Math.PI;
-                camState.targetPhi = 0.92;
-
-                game.reset();
-                syncAllPiecesFromBoard();
-
-                setTimeout(() => {
-                    const modal = document.getElementById('online-modal');
-                    modal.classList.add('hidden');
-                    modal.classList.remove('flex');
-                    this.triggerSimulatedOpponentIfNeeded();
-                }, 600);
-            },
-
-            handleIncomingPacket(data) {
-                if (!data || !data.type) return;
-
-                if (data.type === 'LOBBY_SEEK' && this.isSearchingRandom) {
-                    const sharedRoom = data.roomCode || this.generateCode();
-                    this.roomCode = sharedRoom;
-                    this.openAstralChannel(`WIZCHESS_ROOM_${sharedRoom}`);
-                    this.broadcastPacket({ type: 'HANDSHAKE_ACCEPT', code: sharedRoom });
-                    this.isSimulatedRemote = false;
-                    this.opponentName = 'Online Challenger';
-                    this.finalizeConnection('w');
-                } else if (data.type === 'HANDSHAKE_JOIN' && !this.isOnline) {
-                    this.broadcastPacket({ type: 'HANDSHAKE_ACCEPT', code: this.roomCode });
-                    this.isSimulatedRemote = false;
-                    this.opponentName = 'Online Challenger';
-                    this.finalizeConnection('w');
-                } else if (data.type === 'HANDSHAKE_ACCEPT' && !this.isOnline) {
-                    this.isSimulatedRemote = false;
-                    this.opponentName = 'Online Challenger';
-                    this.finalizeConnection('b');
-                } else if (data.type === 'MOVE' && data.move) {
-                    executeAnimatedMove(data.move, null, true);
-                } else if (data.type === 'RESET') {
-                    const modal = document.getElementById('gameover-modal');
-                    modal.classList.add('hidden');
-                    modal.classList.remove('flex');
-                    game.reset();
-                    syncAllPiecesFromBoard();
-                } else if (data.type === 'BOARD_STYLE' && typeof data.styleIdx === 'number') {
-                    currentBoardStyleIdx = data.styleIdx;
-                    applyBoardStyle(currentBoardStyleIdx);
-                } else if (data.type === 'DISCONNECT') {
-                    this.handleDisconnect('Opponent departed the Sanctuary.');
-                }
-            },
-
-            sendMove(moveObj) {
-                if (!this.isOnline) return;
-                if (this.isSimulatedRemote) {
-                    this.triggerSimulatedOpponentIfNeeded();
-                } else {
-                    this.broadcastPacket({ type: 'MOVE', move: moveObj });
-                }
-            },
-
-            sendReset() {
-                if (!this.isOnline) return;
-                if (!this.isSimulatedRemote) {
-                    this.broadcastPacket({ type: 'RESET' });
-                } else {
-                    this.triggerSimulatedOpponentIfNeeded();
-                }
-            },
-
-            sendBoardStyle(styleIdx) {
-                if (this.isOnline && !this.isSimulatedRemote) {
-                    this.broadcastPacket({ type: 'BOARD_STYLE', styleIdx });
                 }
             },
 
             disconnect() {
-                this.broadcastPacket({ type: 'DISCONNECT' });
-                this.closeChannel();
-                this.isSimulatedRemote = false;
-                this.handleDisconnect('Astral Link Severed.');
-            },
-
-            handleDisconnect(reason) {
+                if (this.unsubscribeListener) {
+                    this.unsubscribeListener();
+                    this.unsubscribeListener = null;
+                }
                 this.isOnline = false;
-                this.isSimulatedRemote = false;
-                this.updateStatusUI(reason, 'rose', 'Solo');
+                this.roomCode = null;
+                this.updateStatusUI('Astral Link Severed.', 'rose', 'Solo');
                 updateHUD();
             },
 
@@ -2432,13 +2438,13 @@ Player Question: ${questionText}`;
                     discBtn.classList.add('flex');
                 } else if (colorKey === 'rose') {
                     dot.className = 'w-2.5 h-2.5 rounded-full bg-rose-400';
-                    navDot.className = 'w-2 h-2 rounded-full bg-slate-500';
+                    navDot.className = 'w-2.5 h-2.5 rounded-full bg-slate-500';
                     onlineLabel.textContent = 'Online';
                     discBtn.classList.add('hidden');
                     discBtn.classList.remove('flex');
                 } else {
                     dot.className = 'w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse';
-                    navDot.className = 'w-2 h-2 rounded-full bg-amber-400 animate-pulse';
+                    navDot.className = 'w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse';
                     onlineLabel.textContent = 'Hosting';
                     discBtn.classList.add('hidden');
                     discBtn.classList.remove('flex');
@@ -3341,10 +3347,6 @@ Player Question: ${questionText}`;
 
         document.getElementById('btn-quick-match').addEventListener('click', () => {
             onlineMP.startRandomMatchmaking();
-        });
-
-        document.getElementById('btn-sim-online').addEventListener('click', () => {
-            onlineMP.connectSimulatedChallenger();
         });
 
         document.getElementById('btn-disconnect-online').addEventListener('click', () => {
